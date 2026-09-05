@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FormCheck — Biceps Curl Form Checker</title>
+  <meta name="description" content="A browser-based biceps curl form checker (portfolio project scaffold).">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">FC</span>
+      <span class="brand-name">FormCheck</span>
+    </div>
+    <div class="step-indicator" id="step-indicator" aria-live="polite"></div>
+  </header>
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progress-fill"></div>
+  </div>
+
+  <main id="app">
+
+    <!-- ================================================= -->
+    <!-- 1. INSTRUCTIONS -->
+    <!-- ================================================= -->
+    <section id="screen-instructions" class="screen" data-screen="instructions">
+      <div class="screen-inner">
+        <h1 class="screen-title">How to Use</h1>
+        <p class="screen-subtitle">
+          A quick guide to get the most accurate results before you begin.
+        </p>
+
+        <div id="instructions-content" class="instructions-content">
+          <!-- rendered from instructionsContent.js by app.js -->
+        </div>
+
+        <div class="screen-actions screen-actions-end">
+          <button type="button" class="btn btn-primary" data-nav="arm-select">
+            Continue to Arm Selection
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= -->
+    <!-- 2. ARM SELECTION -->
+    <!-- ================================================= -->
+    <section id="screen-arm-select" class="screen" data-screen="arm-select" hidden>
+      <div class="screen-inner">
+        <h1 class="screen-title">Select Your Arm</h1>
+        <p class="screen-subtitle">Choose which arm you'll be training.</p>
+
+        <div class="arm-choice-grid">
+          <button type="button" class="arm-card" data-arm="left" aria-pressed="false">
+            <span class="arm-card-icon" aria-hidden="true">L</span>
+            <span class="arm-card-label">Left Arm</span>
+          </button>
+          <button type="button" class="arm-card" data-arm="right" aria-pressed="false">
+            <span class="arm-card-icon" aria-hidden="true">R</span>
+            <span class="arm-card-label">Right Arm</span>
+          </button>
+        </div>
+
+        <div class="screen-actions">
+          <button type="button" class="btn btn-secondary" data-nav="instructions">Back</button>
+          <button type="button" class="btn btn-primary" id="arm-continue-btn" data-nav="rep-count" disabled>
+            Continue
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= -->
+    <!-- 3. REP COUNT -->
+    <!-- ================================================= -->
+    <section id="screen-rep-count" class="screen" data-screen="rep-count" hidden>
+      <div class="screen-inner">
+        <h1 class="screen-title">How Many Reps?</h1>
+        <p class="screen-subtitle">Set your target rep count for this set.</p>
+
+        <div class="rep-stepper">
+          <button type="button" class="stepper-btn" id="rep-decrement" aria-label="Decrease reps">&minus;</button>
+          <input
+            type="number"
+            id="rep-count-input"
+            class="rep-input"
+            min="1"
+            max="100"
+            step="1"
+            value="10"
+            inputmode="numeric"
+            aria-label="Target number of reps"
+          >
+          <button type="button" class="stepper-btn" id="rep-increment" aria-label="Increase reps">+</button>
+        </div>
+
+        <div class="screen-actions">
+          <button type="button" class="btn btn-secondary" data-nav="arm-select">Back</button>
+          <button type="button" class="btn btn-primary" data-nav="roi-select">Continue</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= -->
+    <!-- 4. ROI SELECTION -->
+    <!-- ================================================= -->
+    <section id="screen-roi-select" class="screen" data-screen="roi-select" hidden>
+      <div class="screen-inner screen-inner-wide">
+        <h1 class="screen-title">Select Region of Interest</h1>
+        <p class="screen-subtitle" id="roi-subtitle">
+          Drag a box around your arm — make sure your shoulder, elbow, and wrist are all inside it.
+        </p>
+
+        <div class="camera-stage" id="roi-camera-stage">
+          <!-- The shared <video> + loading/error overlay (defined once
+               below, in the Workout screen's stage) is moved into this
+               container by app.js whenever the ROI screen is active,
+               so only one stream/decoder ever exists. -->
+          <canvas id="roi-canvas" class="roi-canvas" aria-hidden="true"></canvas>
+        </div>
+
+        <p class="roi-status" id="roi-status">No region selected yet — click and drag on the video</p>
+
+        <div class="screen-actions">
+          <button type="button" class="btn btn-secondary" data-nav="rep-count">Back</button>
+          <div class="roi-action-group">
+            <button type="button" class="btn btn-secondary" id="roi-reset-btn">Reset</button>
+            <button type="button" class="btn btn-primary" id="roi-confirm-btn">Confirm ROI</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= -->
+    <!-- 5. WORKOUT -->
+    <!-- ================================================= -->
+    <section id="screen-workout" class="screen" data-screen="workout" hidden>
+      <div class="screen-inner screen-inner-wide">
+        <h1 class="screen-title">Workout</h1>
+
+        <div class="workout-layout">
+          <div class="camera-stage" id="camera-stage">
+            <!-- Home location of the single shared <video> + state
+                 overlay. app.js moves this pair into #roi-camera-stage
+                 while the ROI screen is active, and back here for the
+                 Workout screen — one stream, reused, never duplicated. -->
+            <video
+              id="camera-video"
+              class="camera-video"
+              autoplay
+              muted
+              playsinline
+              aria-label="Live camera feed"
+              hidden
+            ></video>
+            <!-- Debug-only pose skeleton overlay, drawn by renderer.js
+                 from pose.js's MediaPipe results. Sits below the ROI
+                 mirror so the confirmed ROI stays clearly visible. -->
+            <canvas id="workout-skeleton-canvas" class="skeleton-canvas" aria-hidden="true"></canvas>
+            <!-- Read-only mirror of the confirmed ROI rectangle, drawn
+                 by roi.js using the same rect + coordinate mapping as
+                 the ROI Selection screen. No drag handlers attached —
+                 this canvas cannot modify the ROI. -->
+            <canvas id="workout-roi-canvas" class="roi-canvas workout-roi-overlay" aria-hidden="true"></canvas>
+            <!-- MediaPipe loading/error banner. Overlays the camera
+                 preview WITHOUT hiding it, per Phase 3 optimization
+                 requirements - the camera stays visible underneath
+                 while pose detection is still loading. -->
+            <div class="pose-status" id="pose-status" hidden>
+              <p class="pose-status-text" id="pose-status-text">Preparing pose detection…</p>
+            </div>
+            <div class="camera-state" id="camera-state">
+              <span class="camera-state-icon" id="camera-state-icon" aria-hidden="true">&#9633;</span>
+              <p class="camera-state-text" id="camera-state-text">Camera preview will appear here</p>
+              <button type="button" class="btn btn-secondary" id="camera-retry-btn" hidden>
+                Try Again
+              </button>
+            </div>
+          </div>
+
+          <aside class="workout-hud" aria-label="Workout stats">
+            <div class="hud-hero" aria-live="polite">
+              <span class="hud-hero-value" id="hud-reps">0 / 10</span>
+              <span class="hud-hero-label">Reps</span>
+            </div>
+
+            <div class="hud-arm">
+              <span class="hud-arm-value" id="hud-arm">&mdash;</span>
+              <span class="hud-arm-label">Selected Arm</span>
+            </div>
+
+            <div class="hud-secondary-grid">
+              <div class="hud-stat">
+                <span class="hud-label">Angle</span>
+                <span class="hud-value" id="hud-angle">&mdash;</span>
+              </div>
+              <div class="hud-stat">
+                <span class="hud-label">Stage</span>
+                <span class="hud-value" id="hud-stage">&mdash;</span>
+              </div>
+              <div class="hud-stat hud-stat-good">
+                <span class="hud-label">Good</span>
+                <span class="hud-value" id="hud-good">0</span>
+              </div>
+              <div class="hud-stat hud-stat-bad">
+                <span class="hud-label">Bad</span>
+                <span class="hud-value" id="hud-bad">0</span>
+              </div>
+            </div>
+
+            <div class="hud-feedback" id="hud-feedback" aria-live="polite">
+              <span class="hud-label">Feedback</span>
+              <p class="hud-feedback-text" id="hud-feedback-text">&mdash;</p>
+            </div>
+          </aside>
+        </div>
+
+        <div class="screen-actions">
+          <button type="button" class="btn btn-secondary" data-nav="roi-select">Back</button>
+          <button type="button" class="btn btn-primary" id="finish-workout-btn">
+            Finish Workout
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================= -->
+    <!-- 6. RESULTS -->
+    <!-- ================================================= -->
+    <section id="screen-results" class="screen" data-screen="results" hidden>
+      <div class="screen-inner">
+        <h1 class="screen-title">Workout Complete!</h1>
+        <p class="screen-subtitle" id="results-arm-label">&mdash; arm</p>
+
+        <div class="score-display">
+          <span class="score-value" id="results-score">&mdash; / 10</span>
+          <span class="score-label">Form Score</span>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card"><span class="stat-label">Completed</span><span class="stat-value" id="results-completed">0 / 10</span></div>
+          <div class="stat-card"><span class="stat-label">Good Reps</span><span class="stat-value" id="results-good">0</span></div>
+          <div class="stat-card"><span class="stat-label">Bad Reps</span><span class="stat-value" id="results-bad">0</span></div>
+          <div class="stat-card"><span class="stat-label">Partial Reps</span><span class="stat-value" id="results-partial">0</span></div>
+          <div class="stat-card"><span class="stat-label">Full Reps</span><span class="stat-value" id="results-full">0</span></div>
+          <div class="stat-card"><span class="stat-label">Very Short</span><span class="stat-value" id="results-very-short">0</span></div>
+          <div class="stat-card"><span class="stat-label">Avg. Tempo</span><span class="stat-value" id="results-avg-tempo">&mdash; s</span></div>
+          <div class="stat-card"><span class="stat-label">Tempo Issues</span><span class="stat-value" id="results-tempo-issues">0</span></div>
+        </div>
+
+        <div class="feedback-list">
+          <h2 class="feedback-title">Feedback</h2>
+          <ul id="results-feedback-list">
+            <li>Feedback will appear here once a workout is completed.</li>
+          </ul>
+        </div>
+
+        <div class="screen-actions screen-actions-end">
+          <button type="button" class="btn btn-primary" id="restart-btn" data-nav="arm-select">
+            Restart
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

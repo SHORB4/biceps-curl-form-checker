@@ -1,0 +1,945 @@
+/* =========================================================
+   FormCheck — Phase 0 UI scaffold
+   Clean, modern, fitness/technology visual style.
+   Mobile-first; breakpoints at 768px / 1024px / 1440px.
+   ========================================================= */
+
+:root {
+  --bg: #0a0c10;
+  --bg-elevated: #12151b;
+  --bg-card: #171b22;
+  --border: #262b35;
+  --border-strong: #333a47;
+
+  --text-primary: #f2f5f9;
+  --text-secondary: #97a1b0;
+  --text-muted: #6b7382;
+
+  --accent: #22d3ee;
+  --accent-strong: #06b6d4;
+  --accent-contrast: #04141a;
+
+  --success: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
+
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --header-height: 64px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle ambient glow, purely decorative, zero dependencies */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(600px 400px at 15% -5%, rgba(34, 211, 238, 0.12), transparent 60%),
+    radial-gradient(500px 350px at 100% 10%, rgba(52, 211, 153, 0.08), transparent 60%);
+  pointer-events: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+img, svg {
+  max-width: 100%;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Consistent, on-brand keyboard focus indicator across every
+   interactive element (buttons, inputs, arm cards, steppers). Only
+   shows for keyboard/AT focus, not mouse/touch clicks. */
+button:focus-visible,
+input:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* =========================================================
+   Header + progress
+   ========================================================= */
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0 clamp(1rem, 4vw, 2.5rem);
+  background: rgba(10, 12, 16, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: var(--accent-contrast);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.brand-name {
+  font-size: 1.05rem;
+}
+
+.step-indicator {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.progress-track {
+  position: sticky;
+  top: var(--header-height);
+  z-index: 10;
+  height: 3px;
+  width: 100%;
+  background: var(--border);
+}
+
+.progress-fill {
+  height: 100%;
+  width: 16.6667%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transition: width 0.35s ease;
+}
+
+/* =========================================================
+   Screens (shared)
+   ========================================================= */
+
+main#app {
+  display: block;
+}
+
+.screen {
+  min-height: calc(100vh - var(--header-height) - 3px);
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.5rem, 5vw, 3rem) clamp(1.25rem, 5vw, 2.5rem) calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
+}
+
+.screen-inner {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.screen-inner-wide {
+  max-width: 1200px;
+}
+
+.screen-title {
+  font-size: clamp(1.6rem, 3.2vw + 0.9rem, 2.5rem);
+  font-weight: 800;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
+}
+
+.screen-subtitle {
+  color: var(--text-secondary);
+  font-size: clamp(0.95rem, 1vw + 0.6rem, 1.15rem);
+  margin: 0 0 2rem;
+  max-width: 60ch;
+}
+
+.screen-actions {
+  margin-top: auto;
+  padding-top: 2rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: space-between;
+}
+
+.screen-actions-end {
+  justify-content: flex-end;
+}
+
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+}
+
+/* =========================================================
+   Buttons
+   ========================================================= */
+
+.btn {
+  appearance: none;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1.6rem;
+  font-size: 1rem;
+  font-weight: 700;
+  min-height: 48px;
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+  touch-action: manipulation;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: var(--accent-contrast);
+  box-shadow: 0 6px 20px rgba(34, 211, 238, 0.25);
+}
+
+.btn-primary:hover {
+  box-shadow: 0 8px 26px rgba(34, 211, 238, 0.35);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-card);
+}
+
+.btn-note {
+  font-weight: 500;
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+
+/* =========================================================
+   Instructions screen
+   ========================================================= */
+
+.instructions-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.instruction-section h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0 0 0.6rem;
+}
+
+.instruction-section .intro {
+  color: var(--text-primary);
+  margin: 0 0 0.75rem;
+}
+
+.instruction-section ul {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.instruction-section ul li {
+  color: var(--text-primary);
+}
+
+.instruction-section .note {
+  margin: 0.9rem 0 0;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--warning);
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-primary);
+  font-size: 0.92rem;
+}
+
+.instruction-section .checklist {
+  list-style: none;
+  padding-left: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem 1rem;
+}
+
+.instruction-section .checklist li {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.75rem;
+  background: rgba(52, 211, 153, 0.08);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.instruction-section .checklist li::before {
+  content: "\2713";
+  color: var(--success);
+  font-weight: 800;
+}
+
+/* =========================================================
+   Arm selection screen
+   ========================================================= */
+
+.arm-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.arm-card {
+  appearance: none;
+  cursor: pointer;
+  background: var(--bg-card);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 2rem 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  color: var(--text-primary);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+  min-height: 160px;
+}
+
+.arm-card:hover {
+  border-color: var(--border-strong);
+}
+
+.arm-card:active {
+  transform: scale(0.98);
+}
+
+.arm-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.08);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.arm-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  font-size: 1.4rem;
+  font-weight: 800;
+}
+
+.arm-card[aria-pressed="true"] .arm-card-icon {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: transparent;
+}
+
+.arm-card-label {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+/* =========================================================
+   Rep count screen
+   ========================================================= */
+
+.rep-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.stepper-btn {
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.12s ease;
+}
+
+.stepper-btn:hover {
+  background: var(--bg-elevated);
+}
+
+.stepper-btn:active {
+  transform: scale(0.94);
+}
+
+.rep-input {
+  width: clamp(110px, 22vw, 150px);
+  text-align: center;
+  font-size: clamp(2.4rem, 6vw, 3.2rem);
+  font-weight: 800;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.rep-input::-webkit-outer-spin-button,
+.rep-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* =========================================================
+   Media placeholder (ROI + Workout screens)
+   ========================================================= */
+
+.media-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.media-placeholder-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.media-placeholder-text {
+  font-size: 0.95rem;
+  max-width: 32ch;
+}
+
+.media-placeholder-large {
+  aspect-ratio: 4 / 3;
+}
+
+/* =========================================================
+   Camera stage (Workout screen)
+   ========================================================= */
+
+.camera-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  border: 2px solid var(--border-strong);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-video {
+  position: relative;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  /* Mirror the feed so it behaves like a mirror while facing the
+     camera, matching the desktop app's cv2.flip() preview. */
+  transform: scaleX(-1);
+}
+
+.camera-state {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.85rem;
+  text-align: center;
+  padding: 1.5rem;
+  color: var(--text-muted);
+}
+
+.camera-state-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.camera-state-text {
+  font-size: 0.95rem;
+  max-width: 34ch;
+  color: var(--text-secondary);
+}
+
+.camera-state.camera-state-error .camera-state-icon {
+  color: var(--danger);
+  opacity: 1;
+}
+
+.camera-state.camera-state-error .camera-state-text {
+  color: var(--text-primary);
+}
+
+/* =========================================================
+   ROI selection overlay (ROI Selection screen)
+   ========================================================= */
+
+.roi-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Workout screen's ROI mirror: display-only, never receives input,
+   so it can never modify the confirmed ROI or intercept HUD clicks.
+   Layered above the skeleton overlay so the confirmed ROI stays
+   clearly visible regardless of where the skeleton is drawn. */
+.workout-roi-overlay {
+  z-index: 2;
+  pointer-events: none;
+  cursor: default;
+  touch-action: auto;
+}
+
+/* Debug-only pose skeleton overlay (Phase 3). Display-only, never
+   receives input. Sits above the video, below the ROI mirror. */
+.skeleton-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* MediaPipe loading/error banner (Phase 3 optimization). A small top
+   banner rather than a full-cover overlay, so the camera preview
+   underneath stays visible while pose detection loads. */
+.pose-status {
+  position: absolute;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  background: rgba(10, 12, 16, 0.82);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+.pose-status-text {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.pose-status.pose-status-error {
+  background: rgba(248, 113, 113, 0.15);
+  border: 1px solid var(--danger);
+}
+
+.pose-status.pose-status-error .pose-status-text {
+  color: var(--danger);
+}
+
+.roi-status {
+  margin: 0.9rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  text-align: center;
+}
+
+.roi-status.roi-status-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.roi-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* =========================================================
+   Workout screen
+   ========================================================= */
+
+.workout-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.workout-hud {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+}
+
+/* Reps is the single most important thing during a set - the
+   "understand it without looking away from the camera" requirement -
+   so it gets a hero treatment well above everything else. */
+.hud-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-hero-value {
+  font-size: clamp(2.1rem, 5vw, 2.75rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-hero-label {
+  margin-top: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+}
+
+.hud-arm {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.4rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-arm-value {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hud-arm-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hud-secondary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 1rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.hud-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.hud-label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hud-value {
+  font-size: 1.1rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-stat-good .hud-value {
+  color: var(--success);
+}
+
+.hud-stat-bad .hud-value {
+  color: var(--danger);
+}
+
+.hud-feedback-text {
+  margin: 0.35rem 0 0;
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+
+/* Feedback color reflects the analyzer's own lastFeedback text
+   (e.g. exactly "Good rep!" vs a specific issue) - a supplementary
+   visual cue, not the only signal, since the wording itself already
+   differs; see updateWorkoutHud() in app.js. */
+.hud-feedback.hud-feedback-good .hud-feedback-text {
+  color: var(--success);
+}
+
+.hud-feedback.hud-feedback-attention .hud-feedback-text {
+  color: var(--warning);
+}
+
+/* =========================================================
+   Results screen
+   ========================================================= */
+
+.score-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 2rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.score-value {
+  font-size: clamp(2.5rem, 7vw, 4rem);
+  font-weight: 800;
+  color: var(--success);
+  line-height: 1;
+}
+
+.score-label {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 0.4rem;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.stat-label {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-value {
+  font-size: 1.3rem;
+  font-weight: 800;
+}
+
+.feedback-list {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.feedback-title {
+  font-size: 1rem;
+  margin: 0 0 0.6rem;
+  color: var(--accent);
+}
+
+.feedback-list ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* =========================================================
+   Responsive breakpoints
+   ========================================================= */
+
+/* Narrow portrait phones: most front cameras stream a taller-than-
+   wide frame, and the screen itself is tall - a taller stage shows a
+   bigger, better-fitted preview instead of a wide letterboxed strip.
+   object-fit: contain (and the ROI/skeleton canvases' own dynamic
+   getBoundingClientRect()-based math) already handles any aspect
+   ratio correctly regardless, so this is a pure display preference,
+   not a coordinate change. */
+@media (max-width: 640px) and (orientation: portrait) {
+  .camera-stage {
+    aspect-ratio: 3 / 4;
+  }
+}
+
+/* Short landscape viewports (phones rotated sideways): vertical
+   space is scarce, so trim the generous top/bottom whitespace that
+   works fine on tall screens but pushes content/actions off-screen
+   here. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .screen {
+    padding-top: 1rem;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+  }
+
+  .screen-subtitle {
+    margin-bottom: 1rem;
+  }
+
+  .camera-stage {
+    aspect-ratio: 16 / 9;
+  }
+
+  .workout-hud {
+    padding: 0.85rem 1.25rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .screen {
+    padding-top: clamp(2rem, 5vw, 3.5rem);
+  }
+
+  .arm-card {
+    padding: 2.5rem 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .workout-layout {
+    grid-template-columns: 2.2fr 1fr;
+    align-items: start;
+  }
+
+  .media-placeholder-large {
+    aspect-ratio: 16 / 9;
+  }
+
+  .camera-stage {
+    aspect-ratio: 16 / 9;
+  }
+
+  .screen-inner {
+    max-width: 820px;
+  }
+
+  .screen-inner-wide {
+    max-width: 1280px;
+  }
+}
+
+@media (min-width: 1440px) {
+  .screen-inner {
+    max-width: 880px;
+  }
+}

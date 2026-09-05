@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>exerciseAnalyzer.js — Test Report</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0a0c10;
+      color: #f2f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      padding: 2rem;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
+    p.hint { color: #97a1b0; margin: 0 0 1.5rem; }
+    #summary {
+      font-weight: 700;
+      font-size: 1.1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      margin-bottom: 1.5rem;
+      display: inline-block;
+    }
+    #summary.pass { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+    #summary.fail { background: rgba(248, 113, 113, 0.15); color: #f87171; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li {
+      padding: 0.6rem 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.35rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.9rem;
+    }
+    li.pass { background: rgba(52, 211, 153, 0.08); }
+    li.fail { background: rgba(248, 113, 113, 0.1); color: #f87171; }
+    li .failure { display: block; color: #f2f5f9; margin-top: 0.25rem; padding-left: 1.25rem; }
+  </style>
+</head>
+<body>
+  <h1>exerciseAnalyzer.js — Test Report</h1>
+  <p class="hint">
+    Also logged to the browser console. Served locally required — ES modules do not
+    load over file://.
+  </p>
+  <div id="summary">Running…</div>
+  <ul id="results"></ul>
+
+  <script type="module">
+    import { runTests, printReport } from "./js/testExerciseAnalyzer.js";
+
+    const results = runTests();
+    printReport(results); // also logs full detail to the console
+    const passCount = results.filter((t) => t.passed).length;
+
+    const summaryEl = document.getElementById("summary");
+    summaryEl.textContent = `${passCount}/${results.length} scenarios passed`;
+    summaryEl.className = passCount === results.length ? "pass" : "fail";
+
+    const listEl = document.getElementById("results");
+    for (const test of results) {
+      const li = document.createElement("li");
+      li.className = test.passed ? "pass" : "fail";
+      li.textContent = `${test.passed ? "PASS" : "FAIL"} — ${test.name}`;
+
+      for (const failure of test.failures) {
+        const span = document.createElement("span");
+        span.className = "failure";
+        span.textContent = `- ${failure}`;
+        li.appendChild(span);
+      }
+
+      listEl.appendChild(li);
+    }
+  </script>
+</body>
+</html>
