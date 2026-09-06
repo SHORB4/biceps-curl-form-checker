@@ -25,6 +25,15 @@ const CAMERA_CONSTRAINTS = {
 // even if the caller lost its reference (e.g. after a screen change).
 let activeStream = null;
 
+// TEMPORARY diagnostic instrumentation (mobile "highly unpredictable"
+// runtime audit - see the report this shipped with). Purely
+// observational - logs the ACTUAL negotiated camera settings (which
+// can differ from the requested "ideal" constraints, especially on
+// mobile) and how long video dimensions take to become available
+// after play(). No behavior change. Set to false (or delete this
+// block and its call site) once the audit is done.
+const DEBUG_CAMERA = true;
+
 export function isCameraSupported() {
   return Boolean(
     typeof navigator !== "undefined" &&
@@ -61,11 +70,23 @@ export async function startCamera(videoEl) {
     );
   }
 
+  const debugStartedAt = DEBUG_CAMERA ? performance.now() : 0;
+
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
   } catch (err) {
     throw classifyGetUserMediaError(err);
+  }
+
+  if (DEBUG_CAMERA) {
+    const [videoTrack] = stream.getVideoTracks();
+    const settings = videoTrack ? videoTrack.getSettings() : null;
+    console.log(`[camera-debug] getUserMedia resolved @ ${(performance.now() - debugStartedAt).toFixed(0)}ms`, {
+      requestedConstraints: CAMERA_CONSTRAINTS.video,
+      actualSettings: settings, // includes facingMode/width/height/frameRate as ACTUALLY negotiated - can differ from "ideal"
+      devicePixelRatio: window.devicePixelRatio
+    });
   }
 
   // A previous stream should already have been stopped by the caller
@@ -79,6 +100,18 @@ export async function startCamera(videoEl) {
   videoEl.muted = true;
   videoEl.playsInline = true;
 
+  if (DEBUG_CAMERA) {
+    const onLoadedMetadata = () => {
+      console.log(`[camera-debug] loadedmetadata @ ${(performance.now() - debugStartedAt).toFixed(0)}ms`, {
+        videoWidth: videoEl.videoWidth,
+        videoHeight: videoEl.videoHeight,
+        cssRect: videoEl.getBoundingClientRect(),
+        devicePixelRatio: window.devicePixelRatio
+      });
+    };
+    videoEl.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
+  }
+
   try {
     await videoEl.play();
   } catch {
@@ -86,6 +119,14 @@ export async function startCamera(videoEl) {
     // user-gesture-triggered stream; the `autoplay` attribute and a
     // later user interaction will usually recover it, so this is not
     // treated as a fatal camera error.
+  }
+
+  if (DEBUG_CAMERA) {
+    console.log(`[camera-debug] play() settled @ ${(performance.now() - debugStartedAt).toFixed(0)}ms`, {
+      videoWidth: videoEl.videoWidth,
+      videoHeight: videoEl.videoHeight,
+      readyState: videoEl.readyState
+    });
   }
 
   return stream;

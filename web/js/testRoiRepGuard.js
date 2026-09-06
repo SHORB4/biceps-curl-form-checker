@@ -1,18 +1,36 @@
 // testRoiRepGuard.js
 //
-// Regression test for the mobile ROI glitch: leaving the confirmed
-// ROI mid-curl and returning to it must never complete a rep from
-// stale analyzer state. Exercises the REAL ExerciseAnalyzer and the
-// REAL isArmWithinRoi() (both imported, unmodified) through a small
-// driveFrame() helper that mirrors app.js's onResult decision.
+// Regression test for the mobile ROI glitch and its ROI-exit debounce
+// fix. Exercises the REAL ExerciseAnalyzer and the REAL
+// isArmWithinRoi() (both imported, unmodified) through a small
+// driveFrame() factory that mirrors app.js's onResult decision,
+// including its elapsed-time debounce before resetInProgressRep().
 //
-// IMPORTANT: driveFrame() below must be kept in sync with the actual
-// onResult handler in app.js (the "if (result.landmarks...) { if
-// (isArmWithinRoi(...)) { analyzer.update(...) } else {
-// resetInProgressRep() } }" block) - it is a deliberate, disclosed
+// IMPORTANT: makeFrameDriver() below must be kept in sync with the
+// actual onResult handler in app.js - it is a deliberate, disclosed
 // copy for testability, not a reimplementation of separate logic.
-// app.js's own resetInProgressRep() field list must match the one
-// here if it ever changes.
+// app.js's own resetInProgressRep() field list and ROI_EXIT_DEBOUNCE_MS
+// value must match the ones here if they ever change.
+//
+// HISTORY (why this file keeps changing - each revision closed a gap
+// the previous one's passing suite didn't cover):
+//   1. First version only modeled "person detected, but outside the
+//      ROI" - missed the "MediaPipe detects nobody at all" case, which
+//      the deployed code (at the time) didn't reset on. Real bug,
+//      passing test.
+//   2. Second version added the "nobody detected" case and made
+//      driveFrame() reset immediately on ANY non-qualifying frame -
+//      matching the code at the time. That code turned out to be too
+//      AGGRESSIVE: a single transient MediaPipe dropout (common on
+//      mobile) could discard a genuine, entirely-in-ROI rep. Passing
+//      test, but a different real bug (missed reps, not false reps).
+//   3. This version models the ROI_EXIT_DEBOUNCE_MS elapsed-time
+//      debounce that fixes (2): resetInProgressRep() now only fires
+//      after ROI_EXIT_DEBOUNCE_MS of CONTINUOUS non-qualifying frames,
+//      not on the first one. driveFrame() takes an explicit `nowMs`
+//      (mirroring performance.now() in app.js) so debounce timing is
+//      deterministic and fast to test, rather than relying on real
+//      sleeps.
 //
 // Run in a browser: open test-roi-rep-guard.html via a local server
 // (ES module imports require http(s)://, not file://).
@@ -85,11 +103,21 @@ function outsideFrame() {
   return { shoulder: OUTSIDE_SHOULDER, elbow: OUTSIDE_ELBOW, wrist: OUTSIDE_WRIST };
 }
 
+/**
+ * "MediaPipe detected nobody this frame" - result.landmarks.length
+ * === 0 in the real app. Passed to driveFrame() as `null`, distinct
+ * from outsideFrame() (a person WAS detected, just outside the ROI).
+ * Both must be rejected identically as far as analyzer.update() goes,
+ * and both count toward the SAME debounce timer - see the header.
+ */
+function noDetectionFrame() {
+  return null;
+}
+
 // ---------------------------------------------------------------
-// driveFrame(): the exact decision app.js's onResult makes for one
-// frame, given a landmark triple already selected for the arm. See
-// the header comment - keep this in sync with app.js.
+// Debounce constant - MUST match app.js's ROI_EXIT_DEBOUNCE_MS.
 // ---------------------------------------------------------------
+const ROI_EXIT_DEBOUNCE_MS = 120;
 
 function resetInProgressRep(analyzer) {
   analyzer.stage = "down";
@@ -98,15 +126,57 @@ function resetInProgressRep(analyzer) {
   analyzer.currentRepElbowStartX = null;
 }
 
-function driveFrame(analyzer, frame, timestamp) {
-  const { shoulder, elbow, wrist } = frame;
+/**
+ * Creates a fresh driveFrame(analyzer, frame, timestamp, nowMs)
+ * function with its own private roiExitStartedAt debounce state -
+ * mirrors ONE Workout visit's worth of onResult closure state in
+ * app.js (see enterPoseDetection()'s `let roiExitStartedAt = null;`).
+ * Create one new driver per test scenario - never share one across
+ * scenarios, or one scenario's exit timing would leak into the next.
+ *
+ * `frame` is either the return value of insideFrame()/outsideFrame()
+ * (a {shoulder, elbow, wrist} triple - a person was detected) or
+ * noDetectionFrame() (null - nobody was detected at all).
+ * `timestamp` (seconds) is the analyzer's own clock, used for
+ * MIN_REP_TIME/MAX_REP_TIME classification - unrelated to the
+ * debounce.
+ * `nowMs` (milliseconds) mirrors performance.now() in app.js - the
+ * wall-clock time this frame arrived, used ONLY for the debounce's
+ * elapsed-time measurement.
+ *
+ * Keep this in sync with app.js's actual onResult handler.
+ */
+function makeFrameDriver() {
+  let roiExitStartedAt = null; // null = currently qualifying (or not yet started)
 
-  if (isArmWithinRoi(shoulder, elbow, wrist, ROI, VIDEO_W, VIDEO_H)) {
-    return analyzer.update(shoulder, elbow, wrist, timestamp);
-  }
+  return function driveFrame(analyzer, frame, timestamp, nowMs) {
+    let armInsideRoi = false;
+    let shoulder = null;
+    let elbow = null;
+    let wrist = null;
 
-  resetInProgressRep(analyzer);
-  return null;
+    if (frame) {
+      ({ shoulder, elbow, wrist } = frame);
+      armInsideRoi = isArmWithinRoi(shoulder, elbow, wrist, ROI, VIDEO_W, VIDEO_H);
+    }
+
+    if (armInsideRoi) {
+      roiExitStartedAt = null; // clear the debounce - back to a qualifying frame
+      return analyzer.update(shoulder, elbow, wrist, timestamp);
+    }
+
+    // Invalid/outside frame: NEVER reaches analyzer.update() - the
+    // debounce below only decides WHEN the in-progress state gets
+    // invalidated, never whether THIS frame can advance it.
+    if (roiExitStartedAt === null) {
+      roiExitStartedAt = nowMs;
+    }
+    const exitDurationMs = nowMs - roiExitStartedAt;
+    if (exitDurationMs >= ROI_EXIT_DEBOUNCE_MS) {
+      resetInProgressRep(analyzer);
+    }
+    return null;
+  };
 }
 
 // ---------------------------------------------------------------
@@ -154,51 +224,132 @@ export function runTests() {
   }
 
   // ===============================================================
-  // 1/2. Normal reps entirely inside the ROI - both arms - must count
-  // exactly as ExerciseAnalyzer already does on its own (no
-  // interference from the ROI guard when the arm never leaves).
+  // TEST 1: One invalid frame during an otherwise valid rep - no
+  // reset, no false rep. The debounce's core purpose: a single
+  // transient dropout must not disturb an in-progress rep at all.
+  // Both arms.
   // ===============================================================
   for (const arm of ["left", "right"]) {
-    r.start(`1. Normal full curl entirely inside ROI (${arm} arm)`);
+    r.start(`1. One transient invalid frame mid-curl - no reset, real rep still completes (${arm} arm)`);
     {
+      const drive = makeFrameDriver();
       const analyzer = new ExerciseAnalyzer(arm);
-      driveFrame(analyzer, insideFrame(180), 0.0); // start extended
-      driveFrame(analyzer, insideFrame(30), 0.5); // curl
-      const res = driveFrame(analyzer, insideFrame(180), 2.0); // extend -> completes
 
-      r.assert(res !== null, "in-ROI frames should reach the analyzer");
-      r.assert(analyzer.reps === 1, `reps should be 1, got ${analyzer.reps}`);
-      r.assert(analyzer.goodReps === 1, `goodReps should be 1, got ${analyzer.goodReps}`);
+      drive(analyzer, insideFrame(180), 0.0, 0); // resting, inside
+      const midCurl = drive(analyzer, insideFrame(30), 0.5, 500); // mid-curl, inside
+      r.assert(midCurl.stage === "up", 'stage should be "up" mid-curl');
+
+      // ONE transient blip - e.g. a single dropped detection - then
+      // immediately back inside on the very next frame.
+      drive(analyzer, noDetectionFrame(), 0.55, 510);
+
+      r.assert(analyzer.stage === "up", "a single transient blip must NOT reset the in-progress rep");
+      r.assert(analyzer.reps === 0, "no false rep from the blip itself");
+
+      // The SAME rep completes normally afterward - proving the blip
+      // didn't corrupt anything.
+      const completed = drive(analyzer, insideFrame(180), 1.0, 1000);
+      r.assert(completed.reps === 1, `the real rep should still complete despite the earlier blip, got ${completed.reps}`);
     }
   }
 
   // ===============================================================
-  // 3/4/5. THE REGRESSION CASE: valid curl begins inside ROI, arm
-  // leaves ROI mid-curl, several frames occur outside ROI, arm
-  // returns to ROI - must NOT produce a false rep. Both arms.
+  // TEST 2: Two consecutive invalid frames, still well within the
+  // debounce window - no reset. (Requested as "3-frame approach"
+  // language; this project uses the elapsed-time approach instead per
+  // the fix spec, so this models the time-based equivalent: a short
+  // burst that totals far less than ROI_EXIT_DEBOUNCE_MS.)
   // ===============================================================
   for (const arm of ["left", "right"]) {
-    r.start(`2. Leave ROI mid-curl and return - no false rep (${arm} arm)`);
+    r.start(`2. Two consecutive invalid frames within the debounce window - no reset (${arm} arm)`);
     {
+      const drive = makeFrameDriver();
       const analyzer = new ExerciseAnalyzer(arm);
 
-      driveFrame(analyzer, insideFrame(180), 0.0); // 1. curl begins inside ROI (resting)
-      const midCurl = driveFrame(analyzer, insideFrame(30), 0.5); // still inside - now mid-curl
+      drive(analyzer, insideFrame(180), 0.0, 0);
+      const midCurl = drive(analyzer, insideFrame(30), 0.5, 500);
+      r.assert(midCurl.stage === "up", 'stage should be "up" mid-curl');
+
+      // Two invalid frames 30ms apart, well under ROI_EXIT_DEBOUNCE_MS.
+      drive(analyzer, outsideFrame(), 0.51, 510);
+      drive(analyzer, noDetectionFrame(), 0.54, 540);
+
+      r.assert(analyzer.stage === "up", "two invalid frames within the debounce window must not reset yet");
+      r.assert(analyzer.reps === 0, "reps must still be 0");
+
+      // Returning inside completes the ORIGINAL rep (state was never
+      // reset), not a false one.
+      const completed = drive(analyzer, insideFrame(180), 1.0, 1000);
+      r.assert(completed.reps === 1, `original rep should complete normally, got ${completed.reps}`);
+    }
+  }
+
+  // ===============================================================
+  // TEST 3: Sustained ROI exit - reset DOES occur once the debounce
+  // threshold is exceeded, and the previously COMPLETED rep count is
+  // preserved (only the in-progress second rep is discarded).
+  // ===============================================================
+  for (const arm of ["left", "right"]) {
+    r.start(`3. Sustained ROI exit resets in-progress rep but preserves completed reps (${arm} arm)`);
+    {
+      const drive = makeFrameDriver();
+      const analyzer = new ExerciseAnalyzer(arm);
+
+      // First, a genuine completed rep.
+      drive(analyzer, insideFrame(180), 0.0, 0);
+      drive(analyzer, insideFrame(30), 0.5, 500);
+      const firstRep = drive(analyzer, insideFrame(180), 2.0, 2000);
+      r.assert(firstRep.reps === 1, "sanity: first rep should complete");
+
+      // Start a second rep, then leave the ROI for LONGER than the
+      // debounce threshold (frames spaced well beyond
+      // ROI_EXIT_DEBOUNCE_MS apart in total elapsed time).
+      const secondMidCurl = drive(analyzer, insideFrame(30), 2.5, 2500);
+      r.assert(secondMidCurl.stage === "up", 'stage should be "up" for the second rep');
+
+      drive(analyzer, outsideFrame(), 2.6, 2600); // exit starts (elapsed 0ms)
+      drive(analyzer, outsideFrame(), 2.65, 2650); // elapsed 50ms - still under threshold
+      const afterSustained = drive(analyzer, outsideFrame(), 2.75, 2750); // elapsed 150ms - crosses 120ms
+
+      r.assert(afterSustained === null, "an outside frame should never reach the analyzer");
+      r.assert(analyzer.stage === "down", "sustained exit (>120ms) should reset the in-progress second rep");
+      r.assert(
+        analyzer.reps === 1,
+        `the completed FIRST rep must be preserved through the reset, got reps=${analyzer.reps}`
+      );
+    }
+  }
+
+  // ===============================================================
+  // TEST 4: Leave ROI -> several invalid frames -> return: zero false
+  // reps (the original reported bug, re-verified through the debounce
+  // path). Both arms.
+  // ===============================================================
+  for (const arm of ["left", "right"]) {
+    r.start(`4. Leave ROI, several invalid frames, return - zero false reps (${arm} arm)`);
+    {
+      const drive = makeFrameDriver();
+      const analyzer = new ExerciseAnalyzer(arm);
+
+      drive(analyzer, insideFrame(180), 0.0, 0);
+      const midCurl = drive(analyzer, insideFrame(30), 0.5, 500);
       r.assert(midCurl.stage === "up", 'stage should be "up" right before leaving the ROI');
 
-      // 2/3. arm leaves the ROI, several frames occur outside it -
-      // none of these may reach analyzer.update().
-      driveFrame(analyzer, outsideFrame(), 0.6);
-      driveFrame(analyzer, outsideFrame(), 0.7);
-      driveFrame(analyzer, outsideFrame(), 0.8);
+      // Several invalid frames, comfortably spanning past the
+      // debounce threshold (mix of detected-but-outside and
+      // undetected, as a real phone would actually produce).
+      drive(analyzer, outsideFrame(), 0.6, 600);
+      drive(analyzer, noDetectionFrame(), 0.7, 700);
+      drive(analyzer, noDetectionFrame(), 0.8, 800);
+      drive(analyzer, outsideFrame(), 0.9, 900);
 
-      r.assert(analyzer.stage === "down", 'leaving the ROI should discard the in-progress rep (stage back to "down")');
+      r.assert(analyzer.stage === "down", "sustained multi-frame exit should have reset by now");
       r.assert(analyzer.reps === 0, "reps must still be 0 while outside the ROI");
 
-      // 4/5. arm returns to the ROI, already extended - this must NOT
-      // be interpreted as completing the rep that was in progress
-      // before leaving.
-      const backInRoi = driveFrame(analyzer, insideFrame(180), 1.0);
+      // Arm returns to the ROI, already extended - must NOT be
+      // interpreted as completing the rep that was in progress before
+      // leaving.
+      const backInRoi = drive(analyzer, insideFrame(180), 1.0, 1000);
 
       r.assert(backInRoi !== null, "the returning frame should reach the analyzer");
       r.assert(
@@ -209,46 +360,98 @@ export function runTests() {
   }
 
   // ===============================================================
-  // A genuine rep performed entirely AFTER the leave/return sequence
-  // must still count normally - the guard should not permanently
-  // break tracking, only discard the interrupted one.
+  // TEST 5: Genuine rep entirely inside the ROI still counts exactly
+  // once - the debounce must never interfere when the arm never
+  // leaves. Both arms.
   // ===============================================================
-  r.start("3. A real rep after returning to the ROI still counts");
+  for (const arm of ["left", "right"]) {
+    r.start(`5. Genuine rep entirely inside ROI counts exactly once (${arm} arm)`);
+    {
+      const drive = makeFrameDriver();
+      const analyzer = new ExerciseAnalyzer(arm);
+
+      drive(analyzer, insideFrame(180), 0.0, 0);
+      drive(analyzer, insideFrame(30), 0.5, 500);
+      const res = drive(analyzer, insideFrame(180), 2.0, 2000);
+
+      r.assert(res !== null, "in-ROI frames should reach the analyzer");
+      r.assert(analyzer.reps === 1, `reps should be 1, got ${analyzer.reps}`);
+      r.assert(analyzer.goodReps === 1, `goodReps should be 1, got ${analyzer.goodReps}`);
+    }
+  }
+
+  // ===============================================================
+  // A real rep performed AFTER a sustained leave/return sequence must
+  // still count normally - the debounce/reset should not permanently
+  // break tracking, only discard the interrupted rep.
+  // ===============================================================
+  r.start("5b. A real rep after a sustained leave/return still counts");
   {
+    const drive = makeFrameDriver();
     const analyzer = new ExerciseAnalyzer("left");
 
-    driveFrame(analyzer, insideFrame(180), 0.0);
-    driveFrame(analyzer, insideFrame(30), 0.5);
-    driveFrame(analyzer, outsideFrame(), 0.6);
-    driveFrame(analyzer, outsideFrame(), 0.7);
-    driveFrame(analyzer, insideFrame(180), 1.0); // back in ROI, no false rep (as above)
+    drive(analyzer, insideFrame(180), 0.0, 0);
+    drive(analyzer, insideFrame(30), 0.5, 500);
+    drive(analyzer, outsideFrame(), 0.6, 600);
+    drive(analyzer, outsideFrame(), 0.7, 750); // elapsed 150ms - crosses threshold, resets
+    drive(analyzer, insideFrame(180), 1.0, 1000); // back in ROI, no false rep (as TEST 4)
 
     r.assert(analyzer.reps === 0, "sanity: still 0 right after returning");
 
-    driveFrame(analyzer, insideFrame(30), 1.5); // a fresh, real curl
-    const completed = driveFrame(analyzer, insideFrame(180), 3.0); // and extension
+    const midCurl2 = drive(analyzer, insideFrame(30), 1.5, 1500); // a fresh, real curl
+    r.assert(midCurl2.stage === "up", 'stage should be "up" for the fresh curl');
+    const completed = drive(analyzer, insideFrame(180), 3.0, 3000); // and extension
 
     r.assert(completed.reps === 1, `a genuine subsequent rep should still count, got ${completed.reps}`);
   }
 
   // ===============================================================
-  // Desktop-equivalent path unaffected: a session that never leaves
-  // the ROI never calls resetInProgressRep() at all, so its results
-  // are identical to driving ExerciseAnalyzer directly (no ROI
-  // involved) - covered already by testExerciseAnalyzer.js's own
-  // suite; this just confirms the guard is a no-op on that path too.
+  // TEST 6 is covered by the (arm) loops above (TESTS 1-5 each run
+  // for both "left" and "right").
   // ===============================================================
-  r.start("4. Multiple reps entirely inside ROI (no ROI interaction at all)");
+
+  // ===============================================================
+  // TEST 7: Normal multi-rep session with NO ROI interaction at all -
+  // the debounce path is never even touched (roiExitStartedAt stays
+  // null throughout), so results are identical to driving
+  // ExerciseAnalyzer directly - covered already by
+  // testExerciseAnalyzer.js's own suite; this just confirms the guard
+  // is a total no-op on that path too.
+  // ===============================================================
+  r.start("7. Multiple reps entirely inside ROI (no ROI interaction at all)");
   {
+    const drive = makeFrameDriver();
     const analyzer = new ExerciseAnalyzer("right");
 
-    driveFrame(analyzer, insideFrame(180), 0.0);
-    driveFrame(analyzer, insideFrame(30), 0.5);
-    driveFrame(analyzer, insideFrame(180), 2.0);
-    driveFrame(analyzer, insideFrame(30), 2.5);
-    const res = driveFrame(analyzer, insideFrame(180), 4.5);
+    drive(analyzer, insideFrame(180), 0.0, 0);
+    drive(analyzer, insideFrame(30), 0.5, 500);
+    drive(analyzer, insideFrame(180), 2.0, 2000);
+    drive(analyzer, insideFrame(30), 2.5, 2500);
+    const res = drive(analyzer, insideFrame(180), 4.5, 4500);
 
     r.assert(res.reps === 2, `reps should be 2, got ${res.reps}`);
+  }
+
+  // ===============================================================
+  // Bonus: a realistic mixed sequence (detected-but-outside AND
+  // no-detection frames interleaved while leaving) must still produce
+  // zero false reps once the sustained exit crosses the debounce.
+  // ===============================================================
+  r.start("Bonus. Mixed detected-outside / no-detection frames while leaving - no false rep");
+  {
+    const drive = makeFrameDriver();
+    const analyzer = new ExerciseAnalyzer("left");
+
+    drive(analyzer, insideFrame(180), 0.0, 0);
+    drive(analyzer, insideFrame(30), 0.5, 500);
+    drive(analyzer, outsideFrame(), 0.6, 600); // detected, just outside (elapsed 0ms)
+    drive(analyzer, noDetectionFrame(), 0.7, 700); // lost entirely (elapsed 100ms)
+    drive(analyzer, noDetectionFrame(), 0.8, 800); // still lost (elapsed 200ms - crosses threshold)
+    drive(analyzer, outsideFrame(), 0.9, 900); // detected again, still outside
+    const backInRoi = drive(analyzer, insideFrame(180), 1.0, 1000);
+
+    r.assert(backInRoi !== null, "the returning frame should reach the analyzer");
+    r.assert(analyzer.reps === 0, `mixed leave sequence must not create a false rep, got reps=${analyzer.reps}`);
   }
 
   return r.results;

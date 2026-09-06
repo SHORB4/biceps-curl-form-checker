@@ -15,7 +15,7 @@
 import { INSTRUCTIONS_SECTIONS } from "./instructionsContent.js";
 import { startCamera, stopCamera, isCameraSupported } from "./camera.js";
 import { createRoiController } from "./roi.js";
-import { PoseDetector, isPoseSupported, DEBUG_TIMING, isArmWithinRoi } from "./pose.js";
+import { PoseDetector, isPoseSupported, DEBUG_TIMING, isArmWithinRoi, roiToRawCropRect } from "./pose.js";
 import { drawPoseOverlay, clearPoseOverlay } from "./renderer.js";
 import { ExerciseAnalyzer } from "./exerciseAnalyzer.js";
 import { selectArmLandmarks, armLandmarkIndices } from "./armMapping.js";
@@ -325,26 +325,28 @@ let workoutEnteredAt = null;
  * without touching its rep count/history - the same fields
  * ExerciseAnalyzer._completeRep() itself resets to after a rep
  * finishes, set directly since exerciseAnalyzer.js is not to be
- * modified for this fix (see the mobile ROI glitch report this
+ * modified for this fix (see the mobile ROI glitch reports this
  * shipped with).
  *
  * Root cause this fixes: when the selected arm's landmarks are
  * outside the confirmed ROI, this file already skips calling
  * analyzer.update() for that frame (see isArmWithinRoi() below) -
- * but skipping update() leaves the analyzer's in-progress rep state
- * (stage/repStartTime/currentRepMinAngle/currentRepElbowStartX)
+ * but skipping update() alone leaves the analyzer's in-progress rep
+ * state (stage/repStartTime/currentRepMinAngle/currentRepElbowStartX)
  * completely frozen while the arm is outside the ROI. On a handheld
  * phone, it's common for the arm to drift out of a fixed ROI box
  * mid-curl and come back; without this reset, the FIRST frame back
  * inside the ROI resumes from that stale frozen state - if the arm
  * happened to already be extended again by the time it returns, that
  * single frame alone completes a "rep" that was never actually
- * tracked continuously through the ROI, exactly matching the reported
- * "counts a rep when leaving/re-entering the ROI" bug. A stationary
- * desktop webcam rarely triggers this (the arm practically never
- * leaves a box drawn around it), which is why the bug reads as
- * mobile-only even though the underlying code path is identical on
- * both.
+ * tracked continuously through the ROI.
+ *
+ * Called only after ROI_EXIT_DEBOUNCE_MS of CONTINUOUS non-qualifying
+ * frames (see the debounce logic in onResult below) - not on the
+ * first such frame - so a single transient MediaPipe dropout (common
+ * on mobile: weaker/variable delegate performance, motion blur, lower
+ * frame rate) can't wipe out a genuine, entirely-in-ROI rep just
+ * because one frame happened to miss detection.
  */
 function resetInProgressRep() {
   if (!analyzer) return;
@@ -352,6 +354,66 @@ function resetInProgressRep() {
   analyzer.repStartTime = null;
   analyzer.currentRepMinAngle = 180;
   analyzer.currentRepElbowStartX = null;
+}
+
+// How long the selected arm must be CONTINUOUSLY outside the ROI (or
+// undetected) before resetInProgressRep() fires - not on the very
+// first non-qualifying frame. Elapsed-time based (not a frame count)
+// so it behaves consistently regardless of the device's actual detect
+// rate: a single transient dropout is always tolerated, while a real,
+// sustained exit is always caught, at any frame rate. Chosen from the
+// requested ~100-150ms range.
+const ROI_EXIT_DEBOUNCE_MS = 120;
+
+// ---------------------------------------------------------------
+// TEMPORARY diagnostic instrumentation (mobile ROI false-rep
+// re-investigation - see the report this shipped with). Logs ONLY on
+// an ROI-membership transition, an analyzer.update() call, or a
+// reset triggered by the ROI guard - not every raf tick. Gated behind
+// DEBUG_ROI_GUARD so it can be silenced (or this whole block deleted)
+// once the real-device investigation is done; not meant to ship on
+// indefinitely.
+// ---------------------------------------------------------------
+const DEBUG_ROI_GUARD = true;
+
+/**
+ * Diagnostic-only duplicate of isArmWithinRoi()'s per-point check
+ * (pose.js), used solely to log which INDIVIDUAL landmark(s) are
+ * outside the ROI - never used for any actual accept/reject decision.
+ */
+function debugLandmarkInsideRoi(landmark, roi, videoWidth, videoHeight) {
+  if (!roi || !landmark) return null;
+  const rect = roiToRawCropRect(roi, videoWidth);
+  const px = landmark.x * videoWidth;
+  const py = landmark.y * videoHeight;
+  return px >= rect.x && px <= rect.x + rect.width && py >= rect.y && py <= rect.y + rect.height;
+}
+
+/**
+ * Diagnostic-only: logs the full video/canvas/CSS geometry picture on
+ * demand (window resize/orientationchange, or the first Workout
+ * frame) - lets a real-device session confirm or rule out mobile
+ * layout changes silently altering the coordinate system the
+ * confirmed ROI was captured in. Never used for any decision.
+ */
+function debugLogGeometrySnapshot(label) {
+  if (!DEBUG_ROI_GUARD) return;
+  const rect = cameraVideoEl.getBoundingClientRect();
+  console.log(`[geometry-debug] ${label}`, {
+    videoWidth: cameraVideoEl.videoWidth,
+    videoHeight: cameraVideoEl.videoHeight,
+    cssRect: { width: rect.width, height: rect.height },
+    devicePixelRatio: window.devicePixelRatio,
+    orientation: window.screen && window.screen.orientation ? window.screen.orientation.type : "unknown",
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    screen: currentScreenId
+  });
+}
+
+if (DEBUG_ROI_GUARD) {
+  window.addEventListener("resize", () => debugLogGeometrySnapshot("window resize event"));
+  window.addEventListener("orientationchange", () => debugLogGeometrySnapshot("orientationchange event"));
 }
 
 function enterPoseDetection() {
@@ -365,6 +427,8 @@ function enterPoseDetection() {
   // (e.g. ROI prefetch finished or failed) before this listener call
   // happens to fire again.
   updatePoseStatusUI(poseDetector.getState(), poseDetector.getError());
+
+  debugLogGeometrySnapshot("Workout entry (before first detection)");
 
   workoutEnteredAt = performance.now();
 
@@ -386,6 +450,19 @@ function enterPoseDetection() {
   // start() call below) - also reused by isArmWithinRoi() so both the
   // crop and the ROI-membership gate agree on the exact same rect.
   const confirmedRoi = roiController.getConfirmed();
+
+  // ROI-exit debounce state for this visit only (see
+  // ROI_EXIT_DEBOUNCE_MS above) - null whenever the arm is currently
+  // qualifying (detected + inside ROI); set to the timestamp of the
+  // FIRST non-qualifying frame in the current exit streak otherwise,
+  // so elapsed time can be measured against it every subsequent frame.
+  let roiExitStartedAt = null;
+
+  // TEMPORARY diagnostic instrumentation state for this visit only -
+  // see DEBUG_ROI_GUARD above.
+  let debugFrameCounter = 0;
+  let debugPrevArmInsideRoi = null; // null = no frame processed yet this visit
+  let debugLastDetectionTimestamp = -Infinity;
 
   hudArmEl.textContent = state.selectedArm === "left" ? "Left" : "Right";
   hudRepsEl.textContent = `0 / ${state.targetReps}`;
@@ -421,40 +498,178 @@ function enterPoseDetection() {
 
       drawPoseOverlay(workoutSkeletonCanvasEl, cameraVideoEl, result, selectedArmIndices);
 
-      // Exercise analysis (Phase 4): only when MediaPipe actually
-      // found a person this frame - matching form.py's own
-      // `if results.pose_landmarks:` gate - AND the selected arm's
-      // shoulder/elbow/wrist all fall inside the user's confirmed ROI
-      // (isArmWithinRoi() - see its comment for why this check now
-      // exists here rather than relying on MediaPipe's input crop
-      // alone). When nobody is detected at all, analyzer.update() is
-      // simply not called - leaves state exactly as it was, matching
-      // its existing (Python-equivalent) contract. When a person IS
-      // detected but outside the drawn ROI, resetInProgressRep() (see
-      // its comment) also discards any in-progress rep, so leaving
-      // and re-entering the ROI can never complete a rep from stale
-      // state - see the mobile ROI glitch report this shipped with.
-      // Exactly one analyzer.update() call per frame that has a
-      // detected, in-ROI person - never from any other place in the
-      // codebase.
+      // Exercise analysis: the hard boundary is "selected arm
+      // confirmed DETECTED and INSIDE the user's ROI this frame" -
+      // anything else must not advance the analyzer's state at all.
+      //
+      // BUG FOUND DURING THE MOBILE ROI RE-INVESTIGATION: the
+      // previous version of this gate only reset the analyzer's
+      // in-progress rep when a person WAS detected but outside the
+      // ROI. When MediaPipe detected NOBODY at all this frame
+      // (result.landmarks.length === 0 - a normal, expected outcome,
+      // e.g. the arm moved far enough that even the padded detection
+      // crop no longer contains it, or a momentary tracking dropout),
+      // BOTH branches were skipped: no update(), but also no reset.
+      // On a real phone, "the arm leaves the ROI" very often ALSO
+      // means MediaPipe stops detecting the person entirely (not just
+      // "detected but outside the tight box"), so the in-progress rep
+      // state stayed frozen through that gap and could still complete
+      // a false rep the moment detection resumed - the same bug the
+      // previous fix targeted, surviving through a path its own
+      // regression test never modeled (it only ever fed the analyzer
+      // detected-but-outside-ROI landmarks, never a true "nobody
+      // detected" frame). See the report this shipped with.
+      //
+      // Fixed by computing one armInsideRoi boolean that is only ever
+      // true when BOTH a person was detected AND isArmWithinRoi()
+      // passes, and resetting in every other case - not just the
+      // "detected but outside" one.
+      let armInsideRoi = false;
+      let shoulder = null;
+      let elbow = null;
+      let wrist = null;
+
       if (result.landmarks && result.landmarks.length > 0) {
-        const { shoulder, elbow, wrist } = selectArmLandmarks(result.landmarks[0], state.selectedArm);
+        ({ shoulder, elbow, wrist } = selectArmLandmarks(result.landmarks[0], state.selectedArm));
+        armInsideRoi = isArmWithinRoi(shoulder, elbow, wrist, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight);
+      }
 
-        if (isArmWithinRoi(shoulder, elbow, wrist, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight)) {
-          const analyzerResult = analyzer.update(shoulder, elbow, wrist, performance.now() / 1000);
-          updateWorkoutHud(analyzerResult);
+      if (DEBUG_ROI_GUARD) {
+        debugFrameCounter += 1;
+        const detectionTimestampMs = performance.now();
+        const detectionTimestampIsNewer = detectionTimestampMs > debugLastDetectionTimestamp;
+        debugLastDetectionTimestamp = detectionTimestampMs;
 
-          // Auto-completion: only ever driven by the analyzer's own
-          // confirmed rep count (analyzerResult.reps, incremented
-          // solely inside ExerciseAnalyzer._completeRep()) - never by
-          // angle, stage, or any other proxy. finishWorkout()
-          // self-guards via workoutFinished, so this can fire on every
-          // frame at/above target without any risk of running twice.
-          if (analyzerResult.reps >= state.targetReps) {
-            finishWorkout();
-          }
-        } else {
+        const transitioned = debugPrevArmInsideRoi !== null && debugPrevArmInsideRoi !== armInsideRoi;
+        if (transitioned) {
+          console.log(
+            `[roi-guard] frame ${debugFrameCounter} t=${detectionTimestampMs.toFixed(1)}ms ` +
+              `TRANSITION ${debugPrevArmInsideRoi ? "inside->outside" : "outside->inside"}`,
+            {
+              screen: currentScreenId,
+              roi: confirmedRoi,
+              videoWidth: cameraVideoEl.videoWidth,
+              videoHeight: cameraVideoEl.videoHeight,
+              landmarksDetected: Boolean(shoulder),
+              shoulder: shoulder && { x: shoulder.x, y: shoulder.y },
+              elbow: elbow && { x: elbow.x, y: elbow.y },
+              wrist: wrist && { x: wrist.x, y: wrist.y },
+              shoulderInsideRoi: debugLandmarkInsideRoi(shoulder, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight),
+              elbowInsideRoi: debugLandmarkInsideRoi(elbow, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight),
+              wristInsideRoi: debugLandmarkInsideRoi(wrist, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight),
+              armInsideRoi,
+              fromPaddedInferenceRoi: Boolean(confirmedRoi),
+              detectionTimestampIsNewerThanPrevious: detectionTimestampIsNewer
+            }
+          );
+        }
+        debugPrevArmInsideRoi = armInsideRoi;
+      }
+
+      const repsBeforeThisFrame = analyzer.reps;
+      const stageBeforeThisFrame = analyzer.stage;
+
+      if (armInsideRoi) {
+        // Back inside the ROI (or was never outside it this visit) -
+        // clear any in-progress exit debounce so the NEXT exit, if
+        // any, starts counting from zero rather than inheriting stale
+        // elapsed time from a previous, already-recovered-from one.
+        roiExitStartedAt = null;
+
+        const analyzerResult = analyzer.update(shoulder, elbow, wrist, performance.now() / 1000);
+        updateWorkoutHud(analyzerResult);
+
+        if (DEBUG_ROI_GUARD) {
+          // Distinguishes the analyzer's OWN existing "soft skip" path
+          // (landmarks geometrically inside the ROI, but below
+          // VISIBILITY_THRESHOLD - update() itself preserves state,
+          // no reset ever happens) from the "hard reset" path logged
+          // below in the else branch (armInsideRoi === false). Both
+          // are legitimate, but they have very different failure
+          // signatures if either fires too often - see the audit
+          // report for how this distinction maps to categories A/D.
+          console.log(
+            `[roi-guard] frame ${debugFrameCounter} analyzer.update() called` +
+              (analyzerResult.visible ? "" : " (SOFT SKIP - low landmark visibility, state PRESERVED)"),
+            {
+              screen: currentScreenId,
+              roi: confirmedRoi,
+              videoWidth: cameraVideoEl.videoWidth,
+              videoHeight: cameraVideoEl.videoHeight,
+              shoulder: { x: shoulder.x, y: shoulder.y },
+              elbow: { x: elbow.x, y: elbow.y },
+              wrist: { x: wrist.x, y: wrist.y },
+              armInsideRoi: true,
+              landmarkVisible: analyzerResult.visible,
+              missingParts: analyzerResult.missingParts,
+              fromPaddedInferenceRoi: Boolean(confirmedRoi),
+              stageBefore: stageBeforeThisFrame,
+              stageAfter: analyzer.stage,
+              repsBefore: repsBeforeThisFrame,
+              repsAfter: analyzer.reps,
+              repCountChanged: analyzer.reps !== repsBeforeThisFrame
+            }
+          );
+        }
+
+        // Auto-completion: only ever driven by the analyzer's own
+        // confirmed rep count (analyzerResult.reps, incremented
+        // solely inside ExerciseAnalyzer._completeRep()) - never by
+        // angle, stage, or any other proxy. finishWorkout()
+        // self-guards via workoutFinished, so this can fire on every
+        // frame at/above target without any risk of running twice.
+        if (analyzerResult.reps >= state.targetReps) {
+          finishWorkout();
+        }
+      } else {
+        // Invalid/outside frame: analyzer.update() is NEVER called
+        // here - the debounce below only ever decides WHEN the
+        // existing in-progress state gets invalidated, never whether
+        // this frame itself can advance it. The ROI boundary stays
+        // strict: an outside-ROI (or undetected) frame can never reach
+        // the analyzer as a valid exercise frame, debounce or not.
+        const now = performance.now();
+        if (roiExitStartedAt === null) {
+          roiExitStartedAt = now; // first non-qualifying frame of a new exit streak
+        }
+        const exitDurationMs = now - roiExitStartedAt;
+        const shouldReset = exitDurationMs >= ROI_EXIT_DEBOUNCE_MS;
+
+        if (shouldReset) {
           resetInProgressRep();
+        }
+
+        if (DEBUG_ROI_GUARD && (stageBeforeThisFrame !== analyzer.stage || repsBeforeThisFrame !== analyzer.reps || debugFrameCounter === 1)) {
+          // reason distinguishes the two ways a frame can fail the
+          // hard boundary: "no-detection" (MediaPipe found nobody at
+          // all this frame) vs "detected-but-outside-roi" (a person
+          // WAS found, just not positioned inside the drawn box). A
+          // HARD RESET DISCARDING A MID-CURL "up" STAGE VIA
+          // "no-detection" WHILE THE ARM NEVER ACTUALLY LEFT THE ROI
+          // (i.e. this fires mid-rep, repeatedly, without the user
+          // having moved) is the signature of category D/A from the
+          // audit report - a transient MediaPipe dropout being treated
+          // as a genuine ROI exit. Only reachable now once the
+          // ROI_EXIT_DEBOUNCE_MS grace period has actually elapsed.
+          console.log(`[roi-guard] frame ${debugFrameCounter} HARD RESET (reason: ${shoulder ? "detected-but-outside-roi" : "no-detection"}, after ${exitDurationMs.toFixed(0)}ms continuous exit)`, {
+            screen: currentScreenId,
+            roi: confirmedRoi,
+            videoWidth: cameraVideoEl.videoWidth,
+            videoHeight: cameraVideoEl.videoHeight,
+            landmarksDetected: Boolean(shoulder),
+            shoulder: shoulder && { x: shoulder.x, y: shoulder.y },
+            elbow: elbow && { x: elbow.x, y: elbow.y },
+            wrist: wrist && { x: wrist.x, y: wrist.y },
+            armInsideRoi: false,
+            fromPaddedInferenceRoi: Boolean(confirmedRoi),
+            exitDurationMs,
+            roiExitDebounceMs: ROI_EXIT_DEBOUNCE_MS,
+            stageBefore: stageBeforeThisFrame,
+            stageAfter: analyzer.stage,
+            repsBefore: repsBeforeThisFrame,
+            repsAfter: analyzer.reps,
+            discardedInProgressRep: stageBeforeThisFrame === "up" && analyzer.stage === "down"
+          });
         }
       }
     },

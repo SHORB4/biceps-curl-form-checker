@@ -92,6 +92,22 @@ const HAVE_CURRENT_DATA = 2; // HTMLMediaElement.HAVE_CURRENT_DATA
 export const DEBUG_TIMING = true;
 let _initCallCount = 0;
 
+// ---------------------------------------------------------------
+// TEMPORARY diagnostic instrumentation (mobile "highly unpredictable"
+// runtime audit - see the report this shipped with). Purely
+// observational - logs only, no behavior change. Set to false (or
+// delete this block and its call sites) once the audit is done.
+//
+// Watches, per PoseDetector instance, for two things a live device
+// session can prove or disprove that static code review cannot:
+//   1. videoEl.videoWidth/videoHeight changing mid-session (would
+//      silently desync the ROI, which is captured once in a DIFFERENT
+//      coordinate frame at selection time - see roi.js/app.js).
+//   2. More than one _generation actively ticking at once (would mean
+//      two overlapping detection loops mutating shared state).
+// ---------------------------------------------------------------
+export const DEBUG_GEOMETRY = true;
+
 export function isPoseSupported() {
   return typeof WebAssembly !== "undefined";
 }
@@ -383,6 +399,11 @@ export class PoseDetector {
     // _getCroppedFrame().
     this._cropCanvas = null;
     this._cropCtx = null;
+
+    // TEMPORARY diagnostic instrumentation state - see DEBUG_GEOMETRY.
+    this._debugLastVideoWidth = null;
+    this._debugLastVideoHeight = null;
+    this._debugTicksForGeneration = 0;
   }
 
   _setState(state) {
@@ -540,6 +561,43 @@ export class PoseDetector {
   _tick(videoEl, landmarker, roi, onResult, onError) {
     if (!this._loopRunning) return;
 
+    if (DEBUG_GEOMETRY) {
+      this._debugTicksForGeneration += 1;
+      // Should be numerically impossible under normal operation: any
+      // tick belongs to whichever _generation was current when its
+      // requestAnimationFrame was scheduled (see start()'s comment on
+      // the generation guard), so a mismatch here would mean a stale
+      // loop from a PREVIOUS start() is still ticking concurrently
+      // with the current one - direct evidence of two active
+      // detection loops (category G).
+      if (this._debugTickGeneration !== undefined && this._debugTickGeneration !== this._generation) {
+        console.error(
+          `[geometry-debug] MULTIPLE DETECTION LOOPS DETECTED: a tick from generation ` +
+            `${this._debugTickGeneration} ran after generation advanced to ${this._generation}`
+        );
+      }
+      this._debugTickGeneration = this._generation;
+
+      // videoWidth/videoHeight changing mid-session would desync the
+      // ROI (captured once, in a different coordinate frame, at
+      // selection time - see roi.js/app.js) from what pose.js crops
+      // against here. Logged only on an actual change - should never
+      // fire in a healthy session.
+      if (
+        this._debugLastVideoWidth !== null &&
+        (videoEl.videoWidth !== this._debugLastVideoWidth || videoEl.videoHeight !== this._debugLastVideoHeight)
+      ) {
+        console.error(
+          `[geometry-debug] VIDEO DIMENSIONS CHANGED MID-SESSION: ` +
+            `${this._debugLastVideoWidth}x${this._debugLastVideoHeight} -> ${videoEl.videoWidth}x${videoEl.videoHeight} ` +
+            `(t=${performance.now().toFixed(1)}ms) - the confirmed ROI was captured relative to the OLD dimensions ` +
+            `and is now being read against the NEW ones; this would silently corrupt the ROI boundary check.`
+        );
+      }
+      this._debugLastVideoWidth = videoEl.videoWidth;
+      this._debugLastVideoHeight = videoEl.videoHeight;
+    }
+
     const videoReady =
       videoEl.readyState >= HAVE_CURRENT_DATA &&
       videoEl.videoWidth > 0 &&
@@ -568,7 +626,25 @@ export class PoseDetector {
           source = this._getCroppedFrame(videoEl, cropRect);
         }
 
-        const result = landmarker.detectForVideo(source, performance.now());
+        const detectTimestampMs = performance.now();
+
+        if (DEBUG_GEOMETRY && this._debugLastDetectTimestampMs !== undefined && detectTimestampMs <= this._debugLastDetectTimestampMs) {
+          // Would mean detectForVideo() is about to be called with a
+          // timestamp that does not strictly increase from the last
+          // call - Tasks Vision's VIDEO mode requires monotonically
+          // increasing timestamps and would itself throw/misbehave;
+          // this check exists to make that failure mode loud and
+          // attributable rather than surfacing as a generic detection
+          // error. Should never fire, since detectTimestampMs is a
+          // fresh performance.now() read on every call, by construction.
+          console.error(
+            `[geometry-debug] NON-MONOTONIC DETECTION TIMESTAMP: ${detectTimestampMs.toFixed(3)}ms <= ` +
+              `previous ${this._debugLastDetectTimestampMs.toFixed(3)}ms`
+          );
+        }
+        this._debugLastDetectTimestampMs = detectTimestampMs;
+
+        const result = landmarker.detectForVideo(source, detectTimestampMs);
 
         if (cropRect) {
           result.landmarks = result.landmarks.map((personLandmarks) =>
