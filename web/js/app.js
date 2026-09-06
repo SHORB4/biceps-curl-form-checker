@@ -15,7 +15,7 @@
 import { INSTRUCTIONS_SECTIONS } from "./instructionsContent.js";
 import { startCamera, stopCamera, isCameraSupported } from "./camera.js";
 import { createRoiController } from "./roi.js";
-import { PoseDetector, isPoseSupported, DEBUG_TIMING, roiToRawCropRect } from "./pose.js";
+import { PoseDetector, isPoseSupported, DEBUG_TIMING, isArmWithinRoi } from "./pose.js";
 import { drawPoseOverlay, clearPoseOverlay } from "./renderer.js";
 import { ExerciseAnalyzer } from "./exerciseAnalyzer.js";
 import { selectArmLandmarks, armLandmarkIndices } from "./armMapping.js";
@@ -321,29 +321,37 @@ poseDetector.onStateChange(updatePoseStatusUI);
 let workoutEnteredAt = null;
 
 /**
- * True only if shoulder, elbow, AND wrist all land inside the user's
- * originally drawn (unpadded) ROI rect, in raw/unmirrored pixel space.
+ * Discards whatever rep the analyzer currently has in progress,
+ * without touching its rep count/history - the same fields
+ * ExerciseAnalyzer._completeRep() itself resets to after a rep
+ * finishes, set directly since exerciseAnalyzer.js is not to be
+ * modified for this fix (see the mobile ROI glitch report this
+ * shipped with).
  *
- * pose.js now feeds MediaPipe a PADDED crop (see its padRoiCropRect()
- * comment) so detection keeps working without the face/torso in view
- * - but that means MediaPipe can now return landmarks for someone just
- * outside the box the user actually drew. This re-applies the
- * original "must be inside the ROI" restriction at the point app.js
- * already decides whether to call analyzer.update() for this frame,
- * so a person outside the ROI is rejected exactly as before, just
- * checked here instead of by pixel truncation.
+ * Root cause this fixes: when the selected arm's landmarks are
+ * outside the confirmed ROI, this file already skips calling
+ * analyzer.update() for that frame (see isArmWithinRoi() below) -
+ * but skipping update() leaves the analyzer's in-progress rep state
+ * (stage/repStartTime/currentRepMinAngle/currentRepElbowStartX)
+ * completely frozen while the arm is outside the ROI. On a handheld
+ * phone, it's common for the arm to drift out of a fixed ROI box
+ * mid-curl and come back; without this reset, the FIRST frame back
+ * inside the ROI resumes from that stale frozen state - if the arm
+ * happened to already be extended again by the time it returns, that
+ * single frame alone completes a "rep" that was never actually
+ * tracked continuously through the ROI, exactly matching the reported
+ * "counts a rep when leaving/re-entering the ROI" bug. A stationary
+ * desktop webcam rarely triggers this (the arm practically never
+ * leaves a box drawn around it), which is why the bug reads as
+ * mobile-only even though the underlying code path is identical on
+ * both.
  */
-function isArmWithinRoi(shoulder, elbow, wrist, roi, videoWidth, videoHeight) {
-  if (!roi) return true; // no ROI confirmed - nothing to restrict against
-
-  const rect = roiToRawCropRect(roi, videoWidth);
-  const inside = (landmark) => {
-    const px = landmark.x * videoWidth;
-    const py = landmark.y * videoHeight;
-    return px >= rect.x && px <= rect.x + rect.width && py >= rect.y && py <= rect.y + rect.height;
-  };
-
-  return inside(shoulder) && inside(elbow) && inside(wrist);
+function resetInProgressRep() {
+  if (!analyzer) return;
+  analyzer.stage = "down";
+  analyzer.repStartTime = null;
+  analyzer.currentRepMinAngle = 180;
+  analyzer.currentRepElbowStartX = null;
 }
 
 function enterPoseDetection() {
@@ -419,13 +427,16 @@ function enterPoseDetection() {
       // shoulder/elbow/wrist all fall inside the user's confirmed ROI
       // (isArmWithinRoi() - see its comment for why this check now
       // exists here rather than relying on MediaPipe's input crop
-      // alone). When either isn't true (nobody detected, or the
-      // detected arm is outside the drawn box), analyzer.update() is
-      // simply not called at all this frame, which leaves its state
-      // exactly as it was - not a reset, not a crash, matching its
-      // existing (Python-equivalent) contract. Exactly one
-      // analyzer.update() call per frame that has a detected,
-      // in-ROI person - never from any other place in the codebase.
+      // alone). When nobody is detected at all, analyzer.update() is
+      // simply not called - leaves state exactly as it was, matching
+      // its existing (Python-equivalent) contract. When a person IS
+      // detected but outside the drawn ROI, resetInProgressRep() (see
+      // its comment) also discards any in-progress rep, so leaving
+      // and re-entering the ROI can never complete a rep from stale
+      // state - see the mobile ROI glitch report this shipped with.
+      // Exactly one analyzer.update() call per frame that has a
+      // detected, in-ROI person - never from any other place in the
+      // codebase.
       if (result.landmarks && result.landmarks.length > 0) {
         const { shoulder, elbow, wrist } = selectArmLandmarks(result.landmarks[0], state.selectedArm);
 
@@ -442,6 +453,8 @@ function enterPoseDetection() {
           if (analyzerResult.reps >= state.targetReps) {
             finishWorkout();
           }
+        } else {
+          resetInProgressRep();
         }
       }
     },

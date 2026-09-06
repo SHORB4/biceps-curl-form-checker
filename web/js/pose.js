@@ -198,6 +198,28 @@ export function padRoiCropRect(rect, videoWidth, videoHeight) {
 }
 
 /**
+ * True only if shoulder, elbow, AND wrist (full-frame-normalized
+ * landmarks, as pose.js hands them back) all land inside the user's
+ * originally drawn (unpadded) ROI rect - the hard boundary MediaPipe's
+ * own padded detection input (padRoiCropRect() above) deliberately
+ * does not enforce by itself. Moved here (from app.js) so it can be
+ * exercised directly by a regression test alongside this module's
+ * other ROI geometry helpers - the logic itself is unchanged.
+ */
+export function isArmWithinRoi(shoulder, elbow, wrist, roi, videoWidth, videoHeight) {
+  if (!roi) return true; // no ROI confirmed - nothing to restrict against
+
+  const rect = roiToRawCropRect(roi, videoWidth);
+  const inside = (landmark) => {
+    const px = landmark.x * videoWidth;
+    const py = landmark.y * videoHeight;
+    return px >= rect.x && px <= rect.x + rect.width && py >= rect.y && py <= rect.y + rect.height;
+  };
+
+  return inside(shoulder) && inside(elbow) && inside(wrist);
+}
+
+/**
  * Transforms one landmark's normalized [0,1] coordinates from
  * "relative to a raw-space crop rect" into "relative to the raw,
  * unmirrored, full video frame" - exactly the formula
