@@ -15,10 +15,10 @@
 import { INSTRUCTIONS_SECTIONS } from "./instructionsContent.js";
 import { startCamera, stopCamera, isCameraSupported } from "./camera.js";
 import { createRoiController } from "./roi.js";
-import { PoseDetector, isPoseSupported, DEBUG_TIMING } from "./pose.js";
+import { PoseDetector, isPoseSupported, DEBUG_TIMING, roiToRawCropRect } from "./pose.js";
 import { drawPoseOverlay, clearPoseOverlay } from "./renderer.js";
 import { ExerciseAnalyzer } from "./exerciseAnalyzer.js";
-import { selectArmLandmarks } from "./armMapping.js";
+import { selectArmLandmarks, armLandmarkIndices } from "./armMapping.js";
 
 // Same six screens, same order, as the desktop app's flow:
 // INSTRUCTIONS -> ARM_SELECT -> REP_INPUT -> ROI_SELECT -> WORKOUT -> RESULTS
@@ -320,6 +320,32 @@ poseDetector.onStateChange(updatePoseStatusUI);
 // later whenever it's no longer needed.
 let workoutEnteredAt = null;
 
+/**
+ * True only if shoulder, elbow, AND wrist all land inside the user's
+ * originally drawn (unpadded) ROI rect, in raw/unmirrored pixel space.
+ *
+ * pose.js now feeds MediaPipe a PADDED crop (see its padRoiCropRect()
+ * comment) so detection keeps working without the face/torso in view
+ * - but that means MediaPipe can now return landmarks for someone just
+ * outside the box the user actually drew. This re-applies the
+ * original "must be inside the ROI" restriction at the point app.js
+ * already decides whether to call analyzer.update() for this frame,
+ * so a person outside the ROI is rejected exactly as before, just
+ * checked here instead of by pixel truncation.
+ */
+function isArmWithinRoi(shoulder, elbow, wrist, roi, videoWidth, videoHeight) {
+  if (!roi) return true; // no ROI confirmed - nothing to restrict against
+
+  const rect = roiToRawCropRect(roi, videoWidth);
+  const inside = (landmark) => {
+    const px = landmark.x * videoWidth;
+    const py = landmark.y * videoHeight;
+    return px >= rect.x && px <= rect.x + rect.width && py >= rect.y && py <= rect.y + rect.height;
+  };
+
+  return inside(shoulder) && inside(elbow) && inside(wrist);
+}
+
 function enterPoseDetection() {
   if (!isPoseSupported()) {
     console.error("pose.js: WebAssembly is not supported in this browser - pose detection unavailable.");
@@ -339,6 +365,20 @@ function enterPoseDetection() {
   // Restart. Uses the arm chosen on the Arm Selection screen.
   analyzer = new ExerciseAnalyzer(state.selectedArm);
   workoutFinished = false;
+
+  // Computed once per visit (the selected arm never changes mid-
+  // workout) and reused every frame below, both to select the
+  // analyzer's landmarks and to restrict what the renderer draws -
+  // same arm, same indices, same armMapping.js call, no separate
+  // logic path that could drift from the analyzer's selection.
+  const selectedArmIndices = armLandmarkIndices(state.selectedArm);
+
+  // Captured once for this Workout visit, matching the existing
+  // "ROI is locked in at Confirm time" design (see the poseDetector.
+  // start() call below) - also reused by isArmWithinRoi() so both the
+  // crop and the ROI-membership gate agree on the exact same rect.
+  const confirmedRoi = roiController.getConfirmed();
+
   hudArmEl.textContent = state.selectedArm === "left" ? "Left" : "Right";
   hudRepsEl.textContent = `0 / ${state.targetReps}`;
   hudAngleEl.textContent = "—";
@@ -354,7 +394,7 @@ function enterPoseDetection() {
   // leaving and re-entering Workout, which stops and restarts
   // detection via enter/leavePoseDetection() anyway.
   poseDetector.start(cameraVideoEl, {
-    roi: roiController.getConfirmed(),
+    roi: confirmedRoi,
     onResult(result) {
       if (!hasLoggedPoseReady) {
         hasLoggedPoseReady = true;
@@ -371,30 +411,37 @@ function enterPoseDetection() {
         }
       }
 
-      drawPoseOverlay(workoutSkeletonCanvasEl, cameraVideoEl, result);
+      drawPoseOverlay(workoutSkeletonCanvasEl, cameraVideoEl, result, selectedArmIndices);
 
       // Exercise analysis (Phase 4): only when MediaPipe actually
       // found a person this frame - matching form.py's own
-      // `if results.pose_landmarks:` gate. When no person is found
-      // (e.g. they stepped out of the ROI), analyzer.update() is
+      // `if results.pose_landmarks:` gate - AND the selected arm's
+      // shoulder/elbow/wrist all fall inside the user's confirmed ROI
+      // (isArmWithinRoi() - see its comment for why this check now
+      // exists here rather than relying on MediaPipe's input crop
+      // alone). When either isn't true (nobody detected, or the
+      // detected arm is outside the drawn box), analyzer.update() is
       // simply not called at all this frame, which leaves its state
       // exactly as it was - not a reset, not a crash, matching its
       // existing (Python-equivalent) contract. Exactly one
-      // analyzer.update() call per frame that has a detected person -
-      // never from any other place in the codebase.
+      // analyzer.update() call per frame that has a detected,
+      // in-ROI person - never from any other place in the codebase.
       if (result.landmarks && result.landmarks.length > 0) {
         const { shoulder, elbow, wrist } = selectArmLandmarks(result.landmarks[0], state.selectedArm);
-        const analyzerResult = analyzer.update(shoulder, elbow, wrist, performance.now() / 1000);
-        updateWorkoutHud(analyzerResult);
 
-        // Auto-completion: only ever driven by the analyzer's own
-        // confirmed rep count (analyzerResult.reps, incremented solely
-        // inside ExerciseAnalyzer._completeRep()) - never by angle,
-        // stage, or any other proxy. finishWorkout() self-guards via
-        // workoutFinished, so this can fire on every frame at/above
-        // target without any risk of running twice.
-        if (analyzerResult.reps >= state.targetReps) {
-          finishWorkout();
+        if (isArmWithinRoi(shoulder, elbow, wrist, confirmedRoi, cameraVideoEl.videoWidth, cameraVideoEl.videoHeight)) {
+          const analyzerResult = analyzer.update(shoulder, elbow, wrist, performance.now() / 1000);
+          updateWorkoutHud(analyzerResult);
+
+          // Auto-completion: only ever driven by the analyzer's own
+          // confirmed rep count (analyzerResult.reps, incremented
+          // solely inside ExerciseAnalyzer._completeRep()) - never by
+          // angle, stage, or any other proxy. finishWorkout()
+          // self-guards via workoutFinished, so this can fire on every
+          // frame at/above target without any risk of running twice.
+          if (analyzerResult.reps >= state.targetReps) {
+            finishWorkout();
+          }
         }
       }
     },

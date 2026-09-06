@@ -59,8 +59,26 @@ import {
 const WASM_BASE_URL =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 
+// Accuracy fix: "lite" (5.5MB) was chosen during the initial pose
+// integration purely to minimize load time, but its lower detection
+// quality - especially on a tightly cropped, context-poor ROI image -
+// was found to be a primary cause of intermittent wrong-arm/false-rep
+// behavior not present in the desktop reference (model_complexity=2,
+// the most accurate legacy tier). "full" (9.0MB) is a closer accuracy
+// match while staying meaningfully smaller than "heavy" (29.2MB),
+// which would undo the earlier ROI-prefetch loading-time work.
 const MODEL_ASSET_URL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
+
+// Matches the desktop reference's explicit min_detection_confidence /
+// min_tracking_confidence = 0.6 (form.py's mp_pose.Pose(...) call).
+// minPosePresenceConfidence has no direct desktop equivalent (the
+// legacy Solutions API doesn't expose it separately), so it's set to
+// the same 0.6 for consistency rather than left at the Tasks Vision
+// default of 0.5.
+const MIN_POSE_DETECTION_CONFIDENCE = 0.6;
+const MIN_POSE_PRESENCE_CONFIDENCE = 0.6;
+const MIN_TRACKING_CONFIDENCE = 0.6;
 
 const HAVE_CURRENT_DATA = 2; // HTMLMediaElement.HAVE_CURRENT_DATA
 
@@ -89,9 +107,13 @@ export function isPoseSupported() {
 /**
  * Converts a confirmed ROI rect (mirrored/display pixel space) into
  * the equivalent rect in the video's RAW (unmirrored) pixel space -
- * what canvas drawImage(videoEl, ...) actually reads from, and what
- * MediaPipe therefore needs to crop to. Only X is flipped; nothing
- * in this app mirrors vertically.
+ * what canvas drawImage(videoEl, ...) actually reads from. Only X is
+ * flipped; nothing in this app mirrors vertically.
+ *
+ * This is the TIGHT rect the user actually drew - still the one used
+ * to enforce "person outside the ROI is rejected" (see app.js's
+ * arm-within-ROI check). It is no longer what gets cropped and fed to
+ * MediaPipe directly; see padRoiCropRect() below for that.
  */
 export function roiToRawCropRect(roi, videoWidth) {
   return {
@@ -100,6 +122,79 @@ export function roiToRawCropRect(roi, videoWidth) {
     width: roi.x2 - roi.x1,
     height: roi.y2 - roi.y1
   };
+}
+
+// ---------------------------------------------------------------
+// Context padding: why MediaPipe is no longer fed the tight ROI rect
+// directly
+//
+// Root cause (face/head-not-visible bug report): the ROI Selection
+// screen explicitly instructs users to draw a box tightly around just
+// their arm ("make sure your shoulder, elbow, and wrist are all
+// inside it" - never mentioning the face or torso; form.py's own ROI
+// instructions say the same). MediaPipe's pose landmarker - both the
+// legacy Solutions model the desktop app uses and the Tasks Vision
+// model here - is a whole-body-context model: it is trained on images
+// showing a person's outline (typically shoulders/torso, often the
+// head), not on images containing nothing but an isolated forearm.
+// Cropping tightly to exactly the drawn box - the previous behavior -
+// therefore often fed MediaPipe an image with little to no
+// surrounding body silhouette, which is a well-documented failure
+// mode for this class of detector: it can lose track intermittently
+// even with a fully visible face, and lose track much more severely
+// once the face (which happened to supply some of that context when
+// visible) leaves the frame entirely, exactly matching the reported
+// symptom.
+//
+// Fix: pad the rect actually cropped and handed to detectForVideo()
+// well beyond the user's drawn box, so MediaPipe sees the surrounding
+// context it needs, while the ROI restriction itself - "only look at
+// the region the user selected" - is re-enforced downstream in
+// app.js, against the ORIGINAL tight rect (roiToRawCropRect() above),
+// not the padded one. That preserves both halves of the requirement:
+// MediaPipe gets more context to work with, and a person entirely
+// outside the user's drawn box still cannot be accepted, because their
+// landmarks - even if MediaPipe happens to detect them from within the
+// padded margin - land outside the tight rect app.js checks against.
+//
+// NOT verified against a live camera/browser (none available in this
+// environment) - same category of reasoned-but-unconfirmed judgment
+// call as armMapping.js's ARM_MAPPING_SWAPPED. If manual testing on a
+// real device shows this still isn't enough context in some poses,
+// raise ROI_CONTEXT_PADDING_RATIO / ROI_CONTEXT_MIN_PADDING_FRACTION -
+// that is safe to do without weakening the "outside ROI is rejected"
+// guarantee, since that guarantee lives entirely in app.js's separate,
+// unpadded check.
+// ---------------------------------------------------------------
+
+// Extra context added on EACH side, as a fraction of the ROI's own
+// width/height. 1.0 -> the padded crop is 3x the ROI's width and 3x
+// its height (1x ROI + 1x padding on either side), centered on the
+// original box.
+const ROI_CONTEXT_PADDING_RATIO = 1.0;
+
+// Floor on that padding, as a fraction of the full video frame's
+// width/height, so a very small ROI (e.g. drawn tightly around just
+// the wrist/elbow) still pulls in a meaningful absolute amount of
+// surrounding context rather than a tiny proportional sliver.
+const ROI_CONTEXT_MIN_PADDING_FRACTION = 0.15;
+
+/**
+ * Expands a raw-space rect (as produced by roiToRawCropRect()) with
+ * extra surrounding context on every side, clamped to the video
+ * frame's own bounds. This - not the tight ROI rect - is what gets
+ * cropped and handed to MediaPipe; see the header comment above.
+ */
+export function padRoiCropRect(rect, videoWidth, videoHeight) {
+  const padX = Math.max(rect.width * ROI_CONTEXT_PADDING_RATIO, videoWidth * ROI_CONTEXT_MIN_PADDING_FRACTION);
+  const padY = Math.max(rect.height * ROI_CONTEXT_PADDING_RATIO, videoHeight * ROI_CONTEXT_MIN_PADDING_FRACTION);
+
+  const x1 = Math.max(0, rect.x - padX);
+  const y1 = Math.max(0, rect.y - padY);
+  const x2 = Math.min(videoWidth, rect.x + rect.width + padX);
+  const y2 = Math.min(videoHeight, rect.y + rect.height + padY);
+
+  return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
 }
 
 /**
@@ -165,13 +260,20 @@ async function initPoseLandmarker() {
     delegate: "GPU"
   };
 
+  const landmarkerOptions = {
+    runningMode: "VIDEO",
+    numPoses: 1,
+    minPoseDetectionConfidence: MIN_POSE_DETECTION_CONFIDENCE,
+    minPosePresenceConfidence: MIN_POSE_PRESENCE_CONFIDENCE,
+    minTrackingConfidence: MIN_TRACKING_CONFIDENCE
+  };
+
   let landmarker;
 
   try {
     landmarker = await PoseLandmarker.createFromOptions(vision, {
       baseOptions,
-      runningMode: "VIDEO",
-      numPoses: 1
+      ...landmarkerOptions
     });
   } catch (gpuErr) {
     // Not every device/browser combination has a working GPU delegate
@@ -185,8 +287,7 @@ async function initPoseLandmarker() {
     try {
       landmarker = await PoseLandmarker.createFromOptions(vision, {
         baseOptions: { ...baseOptions, delegate: "CPU" },
-        runningMode: "VIDEO",
-        numPoses: 1
+        ...landmarkerOptions
       });
     } catch (cpuErr) {
       throw wrapError(
@@ -218,10 +319,13 @@ async function initPoseLandmarker() {
  * requestAnimationFrame detection loop.
  *
  * When start() is given a roi, every frame is cropped (via a reused
- * offscreen canvas) to that rect BEFORE being handed to MediaPipe -
- * detectForVideo() only ever sees the cropped image, so a person
- * entirely outside the ROI cannot be detected at all. Resulting
- * landmarks are transformed back into full-frame-normalized
+ * offscreen canvas) to a PADDED version of that rect BEFORE being
+ * handed to MediaPipe - see padRoiCropRect() above for why (context
+ * MediaPipe needs to detect a person reliably without requiring the
+ * face to be visible). "Person outside the ROI is rejected" is
+ * therefore no longer enforced by pixel truncation alone; it is
+ * re-checked by the caller (app.js) against the ORIGINAL tight rect.
+ * Resulting landmarks are transformed back into full-frame-normalized
  * coordinates before reaching callers, so nothing downstream needs
  * to know cropping happened.
  *
@@ -426,15 +530,19 @@ export class PoseDetector {
       this._lastVideoTime = videoEl.currentTime;
 
       try {
-        // ROI crop boundary: MediaPipe receives ONLY the cropped ROI
-        // image when a roi is set, so a person entirely outside it
-        // cannot influence detection at all - not a post-hoc filter
-        // on landmarks from a full-frame detection.
+        // ROI crop boundary: MediaPipe receives the PADDED ROI image
+        // when a roi is set (see padRoiCropRect()'s header comment) -
+        // wide enough to give the pose model surrounding body context,
+        // but still not the full frame, so someone far outside the
+        // user's drawn box still can't influence detection. The
+        // stricter "must be inside the exact drawn box" guarantee is
+        // re-applied by the caller against the tight (unpadded) rect.
         let source = videoEl;
         let cropRect = null;
 
         if (roi) {
-          cropRect = roiToRawCropRect(roi, videoEl.videoWidth);
+          const tightCropRect = roiToRawCropRect(roi, videoEl.videoWidth);
+          cropRect = padRoiCropRect(tightCropRect, videoEl.videoWidth, videoEl.videoHeight);
           source = this._getCroppedFrame(videoEl, cropRect);
         }
 

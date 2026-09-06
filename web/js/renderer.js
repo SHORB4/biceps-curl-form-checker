@@ -27,21 +27,17 @@
 // swap, or interpret which MediaPipe landmark is "left" vs "right" -
 // see pose.js's header comment and the Phase 3 report for that.
 //
-// Face landmarks (display-only filter): MediaPipe's 33-point BlazePose
-// topology reserves indices 0-10 for the face (nose, eyes, ears,
-// mouth) and 11+ for the body. drawPoseOverlay() below skips drawing
-// any point or connection touching indices < FIRST_BODY_LANDMARK_INDEX.
-// This is purely a rendering choice - result.landmarks itself is never
-// modified, so app.js's analyzer wiring (which reads shoulder/elbow/
-// wrist at indices 11-16 via armMapping.js) is completely unaffected;
-// MediaPipe detection, landmark indices, and visibility values are
-// untouched.
-
-import { PoseLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs";
-
-// MediaPipe Pose landmarks 0-10 are the face (nose, eyes x6, ears x2,
-// mouth x2); 11+ are the body, starting with the shoulders.
-const FIRST_BODY_LANDMARK_INDEX = 11;
+// Arm-only rendering: drawPoseOverlay() now takes the selected arm's
+// landmark indices (armIndices, from armMapping.js's
+// armLandmarkIndices()) and draws ONLY that shoulder/elbow/wrist plus
+// the two connections between them - no face, no opposite arm, no
+// hands/fingers, no legs/hips/torso, regardless of what MediaPipe
+// detected. This is purely a rendering restriction: result.landmarks
+// itself is never modified or filtered before reaching the analyzer -
+// MediaPipe still detects and returns the full 33-point pose every
+// frame, and app.js's armMapping.js-based selection (which is what
+// actually reaches ExerciseAnalyzer.update()) is entirely unaffected
+// by what this module chooses to draw.
 
 function videoContentBox(videoEl) {
   const rect = videoEl.getBoundingClientRect();
@@ -80,19 +76,26 @@ export function clearPoseOverlay(canvasEl) {
 }
 
 /**
- * Draws every detected pose's landmarks + skeleton connections from a
- * MediaPipe PoseLandmarkerResult onto canvasEl, aligned to videoEl's
- * current on-screen (letterboxed, mirrored) box. Safe to call with a
- * "no pose detected" result (empty/missing landmarks) - it just
- * resizes and clears the canvas.
+ * Draws ONLY the selected arm's shoulder/elbow/wrist (plus the two
+ * connections between them) from a MediaPipe PoseLandmarkerResult
+ * onto canvasEl, aligned to videoEl's current on-screen (letterboxed,
+ * mirrored) box. Every other detected landmark - face, opposite arm,
+ * hands/fingers, hips/legs/torso - is never drawn, regardless of what
+ * MediaPipe returned.
+ *
+ * armIndices: {shoulder, elbow, wrist} MediaPipe landmark indices for
+ *   the currently selected arm, from armMapping.js's
+ *   armLandmarkIndices(). Required to draw anything - with no
+ *   armIndices (or no detected pose), this only clears the canvas.
  */
-export function drawPoseOverlay(canvasEl, videoEl, result) {
+export function drawPoseOverlay(canvasEl, videoEl, result, armIndices) {
   resizePoseCanvas(canvasEl, videoEl);
   clearPoseOverlay(canvasEl);
 
   if (!result || !result.landmarks || result.landmarks.length === 0) {
     return;
   }
+  if (!armIndices) return;
 
   const box = videoContentBox(videoEl);
   if (!box) return;
@@ -105,38 +108,26 @@ export function drawPoseOverlay(canvasEl, videoEl, result) {
   });
 
   for (const landmarks of result.landmarks) {
+    const shoulder = landmarks[armIndices.shoulder];
+    const elbow = landmarks[armIndices.elbow];
+    const wrist = landmarks[armIndices.wrist];
+    if (!shoulder || !elbow || !wrist) continue;
+
+    const pShoulder = toCanvas(shoulder);
+    const pElbow = toCanvas(elbow);
+    const pWrist = toCanvas(wrist);
+
     ctx.strokeStyle = "#22d3ee";
     ctx.lineWidth = 2;
     ctx.beginPath();
-
-    for (const connection of PoseLandmarker.POSE_CONNECTIONS) {
-      // Skip any connection touching a face landmark - render body/arm
-      // connections only.
-      if (connection.start < FIRST_BODY_LANDMARK_INDEX || connection.end < FIRST_BODY_LANDMARK_INDEX) {
-        continue;
-      }
-
-      const start = landmarks[connection.start];
-      const end = landmarks[connection.end];
-      if (!start || !end) continue;
-
-      const p1 = toCanvas(start);
-      const p2 = toCanvas(end);
-      ctx.moveTo(p1.x, p1.y);
-      ctx.lineTo(p2.x, p2.y);
-    }
-
+    ctx.moveTo(pShoulder.x, pShoulder.y);
+    ctx.lineTo(pElbow.x, pElbow.y);
+    ctx.moveTo(pElbow.x, pElbow.y);
+    ctx.lineTo(pWrist.x, pWrist.y);
     ctx.stroke();
 
     ctx.fillStyle = "#fbbf24";
-    for (let i = FIRST_BODY_LANDMARK_INDEX; i < landmarks.length; i++) {
-      // Starting the loop at FIRST_BODY_LANDMARK_INDEX (rather than
-      // filtering inside a for-of) skips every face point (0-10)
-      // without touching the landmarks array itself.
-      const landmark = landmarks[i];
-      if (!landmark) continue;
-
-      const p = toCanvas(landmark);
+    for (const p of [pShoulder, pElbow, pWrist]) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
       ctx.fill();

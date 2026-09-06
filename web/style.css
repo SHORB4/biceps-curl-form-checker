@@ -631,6 +631,17 @@ main#app {
   color: var(--danger);
 }
 
+.roi-camera-warning {
+  margin: 0 0 1.25rem;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid var(--warning);
+  background: rgba(251, 191, 36, 0.08);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  max-width: 60ch;
+}
+
 .roi-status {
   margin: 0.9rem 0 0;
   color: var(--text-secondary);
@@ -894,6 +905,11 @@ main#app {
 
   .screen-subtitle {
     margin-bottom: 1rem;
+  }
+
+  .roi-camera-warning {
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
   }
 
   .camera-stage {
